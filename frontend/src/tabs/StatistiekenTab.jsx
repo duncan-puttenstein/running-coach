@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TrendingUp, Flag, Award } from "lucide-react";
-import { API_BASE } from "../constants.js";
+import { apiFetch } from "../utils/auth.js";
 import { fmtDuration, fmtKm } from "../utils/format.js";
 import Section from "../components/Section.jsx";
 import StatCard from "../components/StatCard.jsx";
@@ -24,7 +24,7 @@ export default function StatistiekenTab({ connected, C }) {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/athlete/stats`);
+        const res = await apiFetch("/api/athlete/stats");
         const data = await res.json();
         setStats(data);
       } catch (e) {

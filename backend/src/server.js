@@ -2,13 +2,14 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
+import jwt from "jsonwebtoken";
 import pkg from "pg";
 
 dotenv.config();
 const { Pool } = pkg;
 
 const app = express();
-app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+app.use(cors({ origin: process.env.FRONTEND_URL }));
 app.use(express.json());
 
 // ---------- Database (Postgres / Supabase) ----------
@@ -19,17 +20,24 @@ const pool = new Pool({
 
 async function initDb() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      strava_athlete_id TEXT UNIQUE,
+      name TEXT,
+      created_at BIGINT
+    );
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS tokens (
-      id INTEGER PRIMARY KEY,
+      user_id TEXT PRIMARY KEY REFERENCES users(id),
       access_token TEXT,
       refresh_token TEXT,
       expires_at BIGINT
     );
   `);
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS athlete (
-      id INTEGER PRIMARY KEY,
-      strava_athlete_id TEXT,
+    CREATE TABLE IF NOT EXISTS athlete_stats (
+      user_id TEXT PRIMARY KEY REFERENCES users(id),
       stats_json TEXT,
       stats_updated_at BIGINT
     );
@@ -54,8 +62,28 @@ async function initDb() {
       raw_json TEXT
     );
   `);
+  // add user_id to runs if this is an existing table from the single-user version
+  await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id);`);
 }
 await initDb();
+
+// ---------- Auth helpers ----------
+function signToken(userId) {
+  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: "90d" });
+}
+
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: "Not logged in" });
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.userId = decoded.userId;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: "Invalid or expired session" });
+  }
+}
 
 // ---------- Strava OAuth ----------
 app.get("/auth/strava", (req, res) => {
@@ -87,27 +115,47 @@ app.get("/auth/strava/callback", async (req, res) => {
     const data = await tokenRes.json();
     if (!data.access_token) throw new Error(JSON.stringify(data));
 
+    // who just logged in?
+    const athleteRes = await fetch("https://www.strava.com/api/v3/athlete", {
+      headers: { Authorization: `Bearer ${data.access_token}` },
+    });
+    const athlete = await athleteRes.json();
+    const userId = String(athlete.id);
+    const name = `${athlete.firstname || ""} ${athlete.lastname || ""}`.trim() || "Hardloper";
+
     await pool.query(
-      `INSERT INTO tokens (id, access_token, refresh_token, expires_at)
-       VALUES (1, $1, $2, $3)
-       ON CONFLICT (id) DO UPDATE SET
+      `INSERT INTO users (id, strava_athlete_id, name, created_at)
+       VALUES ($1, $1, $2, $3)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,
+      [userId, name, Date.now()]
+    );
+
+    await pool.query(
+      `INSERT INTO tokens (user_id, access_token, refresh_token, expires_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id) DO UPDATE SET
          access_token = EXCLUDED.access_token,
          refresh_token = EXCLUDED.refresh_token,
          expires_at = EXCLUDED.expires_at`,
-      [data.access_token, data.refresh_token, data.expires_at]
+      [userId, data.access_token, data.refresh_token, data.expires_at]
     );
 
-    res.redirect(`${process.env.FRONTEND_URL}?connected=true`);
+    // one-time claim: any legacy runs from before multi-user existed get
+    // assigned to whoever connects first (harmless no-op after that)
+    await pool.query(`UPDATE runs SET user_id = $1 WHERE user_id IS NULL`, [userId]);
+
+    const jwtToken = signToken(userId);
+    res.redirect(`${process.env.FRONTEND_URL}/?token=${jwtToken}&connected=true`);
   } catch (err) {
     console.error(err);
     res.status(500).send("Strava connection failed. Check server logs.");
   }
 });
 
-async function getValidAccessToken() {
-  const { rows } = await pool.query("SELECT * FROM tokens WHERE id = 1");
+async function getValidAccessToken(userId) {
+  const { rows } = await pool.query("SELECT * FROM tokens WHERE user_id = $1", [userId]);
   const row = rows[0];
-  if (!row) throw new Error("Not connected to Strava yet — visit /auth/strava first");
+  if (!row) throw new Error("Not connected to Strava yet");
 
   const now = Math.floor(Date.now() / 1000);
   if (row.expires_at > now + 60) return row.access_token;
@@ -124,8 +172,8 @@ async function getValidAccessToken() {
   });
   const data = await refreshRes.json();
   await pool.query(
-    `UPDATE tokens SET access_token = $1, refresh_token = $2, expires_at = $3 WHERE id = 1`,
-    [data.access_token, data.refresh_token, data.expires_at]
+    `UPDATE tokens SET access_token = $1, refresh_token = $2, expires_at = $3 WHERE user_id = $4`,
+    [data.access_token, data.refresh_token, data.expires_at, userId]
   );
   return data.access_token;
 }
@@ -138,22 +186,29 @@ async function stravaGet(path, token) {
   return res.json();
 }
 
-// ---------- Sync runs from Strava ----------
-app.post("/api/sync", async (req, res) => {
+// ---------- Who am I ----------
+app.get("/api/me", requireAuth, async (req, res) => {
+  const { rows } = await pool.query("SELECT name FROM users WHERE id = $1", [req.userId]);
+  if (!rows[0]) return res.status(404).json({ error: "User not found" });
+  res.json({ name: rows[0].name });
+});
+
+// ---------- Sync runs from Strava (scoped to the logged-in user) ----------
+app.post("/api/sync", requireAuth, async (req, res) => {
   try {
-    const token = await getValidAccessToken();
+    const userId = req.userId;
+    const token = await getValidAccessToken(userId);
 
     try {
       const me = await stravaGet("/athlete", token);
       const stats = await stravaGet(`/athletes/${me.id}/stats`, token);
       await pool.query(
-        `INSERT INTO athlete (id, strava_athlete_id, stats_json, stats_updated_at)
-         VALUES (1, $1, $2, $3)
-         ON CONFLICT (id) DO UPDATE SET
-           strava_athlete_id = EXCLUDED.strava_athlete_id,
+        `INSERT INTO athlete_stats (user_id, stats_json, stats_updated_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id) DO UPDATE SET
            stats_json = EXCLUDED.stats_json,
            stats_updated_at = EXCLUDED.stats_updated_at`,
-        [String(me.id), JSON.stringify(stats), Date.now()]
+        [userId, JSON.stringify(stats), Date.now()]
       );
     } catch (e) {
       console.warn("Could not refresh athlete stats:", e.message);
@@ -166,7 +221,10 @@ app.post("/api/sync", async (req, res) => {
     const activities = await activitiesRes.json();
     const allRuns = activities.filter((a) => a.sport_type === "Run" || a.type === "Run");
 
-    const { rows: existingRows } = await pool.query("SELECT strava_id FROM runs");
+    const { rows: existingRows } = await pool.query(
+      "SELECT strava_id FROM runs WHERE user_id = $1",
+      [userId]
+    );
     const existingIds = new Set(existingRows.map((r) => r.strava_id));
     const newRuns = allRuns.filter((a) => !existingIds.has(String(a.id)));
 
@@ -245,13 +303,14 @@ app.post("/api/sync", async (req, res) => {
 
       await pool.query(
         `INSERT INTO runs
-          (id, strava_id, date, type, distance, moving_sec, splits, split_distances, elev, note,
+          (id, strava_id, user_id, date, type, distance, moving_sec, splits, split_distances, elev, note,
            suffer_score, achievement_count, pr_count, best_efforts, zones, raw_json)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          ON CONFLICT (strava_id) DO NOTHING`,
         [
           `strava_${activity.id}`,
           String(activity.id),
+          userId,
           activity.start_date_local,
           guessRunType(activity),
           +(activity.distance / 1000).toFixed(2),
@@ -284,9 +343,12 @@ function guessRunType(activity) {
   return "Test";
 }
 
-// ---------- Serve data to the frontend ----------
-app.get("/api/runs", async (req, res) => {
-  const { rows } = await pool.query("SELECT * FROM runs ORDER BY date ASC");
+// ---------- Serve data to the frontend (scoped to the logged-in user) ----------
+app.get("/api/runs", requireAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    "SELECT * FROM runs WHERE user_id = $1 ORDER BY date ASC",
+    [req.userId]
+  );
   const runs = rows.map((r) => ({
     id: r.id,
     date: r.date,
@@ -306,15 +368,18 @@ app.get("/api/runs", async (req, res) => {
   res.json(runs);
 });
 
-app.get("/api/athlete/stats", async (req, res) => {
-  const { rows } = await pool.query("SELECT stats_json, stats_updated_at FROM athlete WHERE id = 1");
+app.get("/api/athlete/stats", requireAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    "SELECT stats_json, stats_updated_at FROM athlete_stats WHERE user_id = $1",
+    [req.userId]
+  );
   const row = rows[0];
   if (!row) return res.json(null);
   res.json({ stats: JSON.parse(row.stats_json), updatedAt: Number(row.stats_updated_at) });
 });
 
-app.get("/api/status", async (req, res) => {
-  const { rows } = await pool.query("SELECT id FROM tokens WHERE id = 1");
+app.get("/api/status", requireAuth, async (req, res) => {
+  const { rows } = await pool.query("SELECT user_id FROM tokens WHERE user_id = $1", [req.userId]);
   res.json({ connected: rows.length > 0 });
 });
 

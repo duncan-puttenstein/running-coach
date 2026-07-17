@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
-import { RefreshCw, LayoutDashboard, ClipboardList, Award, Moon, Sun } from "lucide-react";
+import { RefreshCw, LayoutDashboard, ClipboardList, Award, Moon, Sun, LogOut } from "lucide-react";
 import { darkTheme, lightTheme } from "./themes.js";
 import { API_BASE, displayFont, bodyFont } from "./constants.js";
 import { currentPhase } from "./utils/format.js";
+import { getToken, setToken, clearToken, apiFetch } from "./utils/auth.js";
 import DashboardTab from "./tabs/DashboardTab.jsx";
 import RunAnalysisTab from "./tabs/RunAnalysisTab.jsx";
 import StatistiekenTab from "./tabs/StatistiekenTab.jsx";
@@ -12,6 +13,7 @@ export default function App() {
   const [runs, setRuns] = useState([]);
   const [manualRuns, setManualRuns] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [userName, setUserName] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -24,19 +26,40 @@ export default function App() {
     const savedTheme = localStorage.getItem("running-coach-theme");
     if (savedTheme === "light") setIsDarkMode(false);
 
-    checkStatus();
-    loadRuns();
-    if (new URLSearchParams(window.location.search).get("connected")) {
+    // if we just came back from Strava's login screen, grab the token from the URL
+    const params = new URLSearchParams(window.location.search);
+    const tokenFromUrl = params.get("token");
+    if (tokenFromUrl) {
+      setToken(tokenFromUrl);
       window.history.replaceState({}, "", "/");
-      handleSync();
+    }
+
+    if (getToken()) {
+      checkStatus();
+      loadMe();
+      loadRuns();
+      if (params.get("connected")) handleSync();
+    } else {
+      setLoading(false);
     }
   }, []);
 
   async function checkStatus() {
     try {
-      const res = await fetch(`${API_BASE}/api/status`);
+      const res = await apiFetch("/api/status");
       const data = await res.json();
       setConnected(data.connected);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function loadMe() {
+    try {
+      const res = await apiFetch("/api/me");
+      if (!res.ok) return;
+      const data = await res.json();
+      setUserName(data.name);
     } catch (e) {
       console.error(e);
     }
@@ -45,9 +68,9 @@ export default function App() {
   async function loadRuns() {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/runs`);
+      const res = await apiFetch("/api/runs");
       const data = await res.json();
-      setRuns(data);
+      setRuns(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error("Failed to load runs", e);
     } finally {
@@ -58,7 +81,7 @@ export default function App() {
   async function handleSync() {
     setSyncing(true);
     try {
-      await fetch(`${API_BASE}/api/sync`, { method: "POST" });
+      await apiFetch("/api/sync", { method: "POST" });
       await loadRuns();
       setConnected(true);
     } catch (e) {
@@ -66,6 +89,14 @@ export default function App() {
     } finally {
       setSyncing(false);
     }
+  }
+
+  function handleLogout() {
+    clearToken();
+    setConnected(false);
+    setUserName(null);
+    setRuns([]);
+    setManualRuns([]);
   }
 
   function toggleTheme() {
@@ -95,6 +126,8 @@ export default function App() {
     { id: "stats", label: "Statistieken", icon: <Award size={15} /> },
   ];
 
+  const isLoggedIn = !!getToken();
+
   return (
     <div style={{ background: C.ink, minHeight: "100vh", fontFamily: bodyFont, padding: "28px 20px", boxSizing: "border-box" }}>
       <div style={{ maxWidth: 920, margin: "0 auto" }}>
@@ -102,11 +135,13 @@ export default function App() {
         {/* Header */}
         <div style={{ marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
           <div>
-            <div style={{ fontSize: 11, color: C.red, textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 6 }}>Running Coach — Trainingslog</div>
+            <div style={{ fontSize: 11, color: C.red, textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 6 }}>
+              Running Coach — Trainingslog{userName && ` · ${userName}`}
+            </div>
             <div style={{ fontFamily: displayFont, fontWeight: 700, fontSize: 28, color: C.chalk, letterSpacing: "0.01em" }}>FASE {phase.n} · {phase.label.toUpperCase()}</div>
             <div style={{ fontSize: 13, color: C.chalkDim, marginTop: 4 }}>{phase.desc}</div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
               onClick={toggleTheme}
               style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel, border: `1px solid ${C.slate}`, borderRadius: 6, padding: "8px 14px", color: C.chalk, fontSize: 13, cursor: "pointer" }}
@@ -114,42 +149,55 @@ export default function App() {
               {isDarkMode ? <Moon size={14} /> : <Sun size={14} />}
               {isDarkMode ? "Light" : "Dark"}
             </button>
-            {connected ? (
-              <button onClick={handleSync} disabled={syncing} style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel, border: `1px solid ${C.slate}`, borderRadius: 6, padding: "8px 14px", color: C.chalk, fontSize: 13, cursor: "pointer" }}>
-                <RefreshCw size={14} style={{ animation: syncing ? "spin 1s linear infinite" : "none" }} />
-                {syncing ? "Synchroniseren..." : "Ververs Strava"}
-              </button>
+            {isLoggedIn ? (
+              <>
+                <button onClick={handleSync} disabled={syncing} style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel, border: `1px solid ${C.slate}`, borderRadius: 6, padding: "8px 14px", color: C.chalk, fontSize: 13, cursor: "pointer" }}>
+                  <RefreshCw size={14} style={{ animation: syncing ? "spin 1s linear infinite" : "none" }} />
+                  {syncing ? "Synchroniseren..." : "Ververs Strava"}
+                </button>
+                <button onClick={handleLogout} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${C.slate}`, borderRadius: 6, padding: "8px 14px", color: C.chalkDim, fontSize: 13, cursor: "pointer" }}>
+                  <LogOut size={14} /> Uitloggen
+                </button>
+              </>
             ) : (
               <a href={`${API_BASE}/auth/strava`} style={{ display: "flex", alignItems: "center", background: C.red, borderRadius: 6, padding: "8px 14px", color: C.chalk, fontSize: 13, textDecoration: "none" }}>Verbind met Strava</a>
             )}
           </div>
         </div>
 
-        {/* Tab bar */}
-        <div style={{ display: "flex", gap: 4, marginBottom: 24, borderBottom: `1px solid ${C.slate}` }}>
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              style={{
-                display: "flex", alignItems: "center", gap: 7,
-                background: "none", border: "none", cursor: "pointer",
-                padding: "10px 16px",
-                fontFamily: displayFont, fontWeight: 700, fontSize: 13, letterSpacing: "0.04em",
-                color: activeTab === tab.id ? C.chalk : C.chalkDim,
-                borderBottom: activeTab === tab.id ? `2px solid ${C.red}` : "2px solid transparent",
-                marginBottom: -1,
-              }}
-            >
-              {tab.icon} {tab.label.toUpperCase()}
-            </button>
-          ))}
-        </div>
+        {!isLoggedIn ? (
+          <div style={{ background: C.panel, borderRadius: 10, padding: 40, textAlign: "center", color: C.chalkDim }}>
+            Log in met Strava om je eigen trainingslog te zien.
+          </div>
+        ) : (
+          <>
+            {/* Tab bar */}
+            <div style={{ display: "flex", gap: 4, marginBottom: 24, borderBottom: `1px solid ${C.slate}` }}>
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 7,
+                    background: "none", border: "none", cursor: "pointer",
+                    padding: "10px 16px",
+                    fontFamily: displayFont, fontWeight: 700, fontSize: 13, letterSpacing: "0.04em",
+                    color: activeTab === tab.id ? C.chalk : C.chalkDim,
+                    borderBottom: activeTab === tab.id ? `2px solid ${C.red}` : "2px solid transparent",
+                    marginBottom: -1,
+                  }}
+                >
+                  {tab.icon} {tab.label.toUpperCase()}
+                </button>
+              ))}
+            </div>
 
-        {/* Tab content */}
-        {activeTab === "dashboard" && <DashboardTab allRuns={allRuns} onShowModal={() => setShowModal(true)} C={C} />}
-        {activeTab === "analysis" && <RunAnalysisTab allRuns={allRuns} C={C} />}
-        {activeTab === "stats" && <StatistiekenTab connected={connected} C={C} />}
+            {/* Tab content */}
+            {activeTab === "dashboard" && <DashboardTab allRuns={allRuns} onShowModal={() => setShowModal(true)} C={C} />}
+            {activeTab === "analysis" && <RunAnalysisTab allRuns={allRuns} C={C} />}
+            {activeTab === "stats" && <StatistiekenTab connected={connected} C={C} />}
+          </>
+        )}
       </div>
 
       {showModal && (
