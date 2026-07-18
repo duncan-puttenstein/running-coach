@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { Plus, ChevronDown, ChevronUp, Timer, Flag, TrendingUp, Award } from "lucide-react";
+import { Plus, ChevronDown, ChevronUp, Timer, Flag, TrendingUp, Award, BarChart3, Activity } from "lucide-react";
 import { avgPace } from "../utils/analysis.js";
 import { fmtPace, fmtDuration, fmtDate, typeColor, currentPhase, daysUntil } from "../utils/format.js";
 import { displayFont, bodyFont, monoFont } from "../constants.js";
 import SplitLadder from "../components/SplitLadder.jsx";
 import StatCard from "../components/StatCard.jsx";
 import CountdownLane from "../components/CountdownLane.jsx";
+import WeeklyVolumeChart from "../components/WeeklyVolumeChart.jsx";
+import EffortChart from "../components/EffortChart.jsx";
 
 export default function DashboardTab({ allRuns, onShowModal, C }) {
   const [expandedRun, setExpandedRun] = useState(null);
@@ -82,6 +84,19 @@ export default function DashboardTab({ allRuns, onShowModal, C }) {
             <Line type="monotone" dataKey="pace" stroke={C.red} strokeWidth={2} dot={{ fill: C.gold, r: 4 }} />
           </LineChart>
         </ResponsiveContainer>
+      </div>
+
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 28 }}>
+        <div style={{ flex: "1 1 380px", background: C.panel, borderRadius: 10, padding: 22 }}>
+          <div style={{ fontFamily: displayFont, fontWeight: 700, fontSize: 18, color: C.chalk, letterSpacing: "0.03em", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}><BarChart3 size={18} color={C.red} /> WEEKVOLUME</div>
+          <div style={{ fontFamily: bodyFont, fontSize: 12, color: C.chalkDim, marginBottom: 16 }}>Kilometers per week</div>
+          <WeeklyVolumeChart allRuns={allRuns} C={C} />
+        </div>
+        <div style={{ flex: "1 1 380px", background: C.panel, borderRadius: 10, padding: 22 }}>
+          <div style={{ fontFamily: displayFont, fontWeight: 700, fontSize: 18, color: C.chalk, letterSpacing: "0.03em", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}><Activity size={18} color={C.red} /> RELATIVE EFFORT</div>
+          <div style={{ fontFamily: bodyFont, fontSize: 12, color: C.chalkDim, marginBottom: 16 }}>Inspanning per run, met je gemiddelde als richtlijn</div>
+          <EffortChart allRuns={allRuns} C={C} />
+        </div>
       </div>
 
       <div style={{ marginBottom: 20 }}>

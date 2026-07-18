@@ -50,6 +50,21 @@ export function currentPhase() {
   return { n: 3, label: "16K Peak & Taper", desc: "Focus op long run, piek rond 13 sept, daarna taper." };
 }
 
+// Monday of the week a given date falls in — used to group runs into weekly buckets.
+export function weekStartDate(dateStr) {
+  const d = new Date(dateStr);
+  const day = d.getDay(); // 0 = Sunday, 1 = Monday, ...
+  const diff = (day === 0 ? -6 : 1) - day;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diff);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+}
+
+export function fmtWeekLabel(date) {
+  return date.toLocaleDateString("nl-NL", { day: "numeric", month: "short" });
+}
+
 // Needs the current theme (C) since the returned value is a color.
 export function typeColor(type, C) {
   if (type === "Long") return C.chalk;
