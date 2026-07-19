@@ -10,6 +10,7 @@ import ZoneBar from "../components/ZoneBar.jsx";
 import BestEffortsTable from "../components/BestEffortsTable.jsx";
 import FeedbackRow from "../components/FeedbackRow.jsx";
 import Badge from "../components/Badge.jsx";
+import PaceZonesCard from "../components/PaceZonesCard.jsx";
 
 export default function RunAnalysisTab({ allRuns, C }) {
   const [selectedRunId, setSelectedRunId] = useState(allRuns.length ? allRuns[allRuns.length - 1].id : null);
@@ -18,7 +19,7 @@ export default function RunAnalysisTab({ allRuns, C }) {
   if (!allRuns.length) return <div style={{ color: C.chalkDim, padding: 20 }}>Nog geen runs om te analyseren.</div>;
   if (!analysis) return null;
 
-  const { run, pace, elevGain, elevLoss, comparison, splitType, variance, fastestIdx, slowestIdx, finishingKick, terrainFlags, paces, disciplineTrend, disciplineDirection, feedback, fitness, zoneSummary, bestEfforts } = analysis;
+  const { run, pace, elevGain, elevLoss, comparison, splitType, variance, fastestIdx, slowestIdx, finishingKick, terrainFlags, paces, disciplineTrend, disciplineDirection, feedback, fitness, zoneSummary, bestEfforts, paceZones, paceZonesText } = analysis;
   const splitTypeLabel = { positive: "Positieve splits (vertraging)", negative: "Negatieve splits (versnelling)", even: "Gelijkmatige pacing" }[splitType];
 
   return (
@@ -75,6 +76,10 @@ export default function RunAnalysisTab({ allRuns, C }) {
           {slowestIdx >= 0 && <p>Langzaamste km: #{slowestIdx + 1} ({fmtPace(paces[slowestIdx])}/km){terrainFlags[slowestIdx] === "uphill-slowed" && <span style={{ color: C.chalkDim }}> — deels verklaard door een klim</span>}.</p>}
           <p>{finishingKick < -5 ? "Sterke eindsprint in de laatste kilometer." : finishingKick > 10 ? "Duidelijke vertraging in de laatste kilometer." : "Stabiel gehouden richting het einde."}</p>
         </div>
+      </Section>
+
+      <Section title="PACE ZONES" icon={<Activity size={16} color={C.red} />} C={C}>
+        <PaceZonesCard paceZones={paceZones} insight={paceZonesText} C={C} />
       </Section>
 
       <Section title="INSPANNING & HARTSLAGZONES" icon={<Activity size={16} color={C.red} />} C={C}>

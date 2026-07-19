@@ -27,6 +27,56 @@ function findBestEffort(run, nameFragment) {
   return match || null;
 }
 
+// Zones as a ratio of pace vs. threshold (predicted 5K) pace — lower ratio = faster than threshold.
+// This mirrors the standard 6-zone running pace model (Strava's "Pace Zones" card uses the same idea).
+const PACE_ZONE_RATIOS = [
+  { zone: 6, label: "Sprint", min: 0, max: 0.93 },
+  { zone: 5, label: "VO2max", min: 0.93, max: 0.99 },
+  { zone: 4, label: "Drempel", min: 0.99, max: 1.05 },
+  { zone: 3, label: "Tempo", min: 1.05, max: 1.18 },
+  { zone: 2, label: "Duurloop", min: 1.18, max: 1.37 },
+  { zone: 1, label: "Herstel", min: 1.37, max: Infinity },
+];
+
+// Attributes each km-split's time to a pace zone, based on that split's pace relative
+// to the threshold (predicted 5K) pace. Coarser than a per-second stream, but requires
+// no extra data — works with what we already store for every run.
+function computePaceZones(run, paces, thresholdPaceSecPerKm) {
+  if (!thresholdPaceSecPerKm || !paces.length) return null;
+
+  const zoneSeconds = PACE_ZONE_RATIOS.map(() => 0);
+  paces.forEach((p, i) => {
+    const ratio = p / thresholdPaceSecPerKm;
+    let idx = PACE_ZONE_RATIOS.findIndex((z) => ratio >= z.min && ratio < z.max);
+    if (idx === -1) idx = PACE_ZONE_RATIOS.length - 1;
+    zoneSeconds[idx] += run.splits[i] || 0;
+  });
+
+  const total = zoneSeconds.reduce((a, b) => a + b, 0);
+  return PACE_ZONE_RATIOS.map((z, i) => ({
+    zone: z.zone,
+    label: z.label,
+    seconds: zoneSeconds[i],
+    pct: total ? (zoneSeconds[i] / total) * 100 : 0,
+    minPaceSec: z.min * thresholdPaceSecPerKm,
+    maxPaceSec: z.max === Infinity ? Infinity : z.max * thresholdPaceSecPerKm,
+  }));
+}
+
+function paceZonesInsight(zones) {
+  if (!zones) return null;
+  const byZone = Object.fromEntries(zones.map((z) => [z.zone, z.pct]));
+  const easy = (byZone[1] || 0) + (byZone[2] || 0);
+  const tempoThreshold = (byZone[3] || 0) + (byZone[4] || 0);
+  const hard = (byZone[5] || 0) + (byZone[6] || 0);
+
+  if (hard > 25) return `Aanzienlijk aandeel hoge-intensiteit werk (${Math.round(hard)}%) — check of dit een intervalsessie was.`;
+  if (tempoThreshold > 55) return `Overwegend tempo- & drempelwerk (${Math.round(tempoThreshold)}%). Stevige kwaliteitstraining.`;
+  if (easy > 70) return `Overwegend rustig duurloop-werk (${Math.round(easy)}%). Goede aerobe basis-training.`;
+  return "Gemengde inspanning over meerdere zones — een evenwichtige run.";
+}
+
+
 /**
  * Full coaching-style analysis of one run, in the context of everything before it.
  */
@@ -213,10 +263,16 @@ export function analyzeRun(allRuns, runId) {
     estHalfSource: bestKnownHalf ? "strava" : "geschat",
   };
 
+  // Threshold pace for zone calculations: derived from this run's own predicted 5K,
+  // so zones stay consistent with the "as of this run" fitness picture used elsewhere.
+  const thresholdPaceSecPerKm = fitness.est5k ? fitness.est5k / 5 : null;
+  const paceZones = computePaceZones(run, paces, thresholdPaceSecPerKm);
+  const paceZonesText = paceZonesInsight(paceZones);
+
   return {
     run, pace, elevGain, elevLoss, comparison, splitType, variance, fastestIdx, slowestIdx,
     finishingKick, terrainFlags, paces, runElev, disciplineTrend, disciplineDirection, feedback,
-    fitness, zoneSummary,
+    fitness, zoneSummary, paceZones, paceZonesText,
     bestEfforts: { best1k, bestMile, best5k, best10k, bestHalf },
   };
 }
