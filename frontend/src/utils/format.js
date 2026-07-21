@@ -17,11 +17,28 @@ export function fmtDuration(sec) {
     : `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+// Always shows HH:MM:SS, zero-padded — used for KPI totals where the format should stay fixed.
+export function fmtHMS(totalSec) {
+  if (!totalSec || !isFinite(totalSec)) return "00:00:00";
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = Math.round(totalSec % 60);
+  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
+
 export function fmtDate(dateStr) {
   if (!dateStr) return "";
   const d = new Date(dateStr);
   if (isNaN(d)) return dateStr;
   return d.toLocaleDateString("nl-NL", { day: "numeric", month: "short", year: "numeric" });
+}
+
+// Short form without year — e.g. "18 juli"
+export function fmtShortDate(dateStr) {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  if (isNaN(d)) return dateStr;
+  return d.toLocaleDateString("nl-NL", { day: "numeric", month: "long" });
 }
 
 export function fmtPaceDelta(deltaSec) {

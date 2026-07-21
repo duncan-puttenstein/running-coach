@@ -64,6 +64,8 @@ async function initDb() {
   `);
   // add user_id to runs if this is an existing table from the single-user version
   await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id);`);
+  await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS avg_heartrate REAL;`);
+  await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS excluded BOOLEAN DEFAULT FALSE;`);
 }
 await initDb();
 
@@ -269,11 +271,13 @@ app.post("/api/sync", requireAuth, async (req, res) => {
 
       let bestEfforts = [];
       let sufferScore = null;
+      let avgHeartrate = null;
       let achievementCount = activity.achievement_count ?? null;
       let prCount = activity.pr_count ?? null;
       try {
         const detail = await stravaGet(`/activities/${activity.id}`, token);
         sufferScore = detail.suffer_score ?? null;
+        avgHeartrate = detail.average_heartrate ?? null;
         achievementCount = detail.achievement_count ?? achievementCount;
         prCount = detail.pr_count ?? prCount;
         if (Array.isArray(detail.best_efforts)) {
@@ -304,8 +308,8 @@ app.post("/api/sync", requireAuth, async (req, res) => {
       await pool.query(
         `INSERT INTO runs
           (id, strava_id, user_id, date, type, distance, moving_sec, splits, split_distances, elev, note,
-           suffer_score, achievement_count, pr_count, best_efforts, zones, raw_json)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+           suffer_score, achievement_count, pr_count, best_efforts, zones, avg_heartrate, raw_json)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          ON CONFLICT (strava_id) DO NOTHING`,
         [
           `strava_${activity.id}`,
@@ -324,6 +328,7 @@ app.post("/api/sync", requireAuth, async (req, res) => {
           prCount,
           JSON.stringify(bestEfforts),
           JSON.stringify(zones),
+          avgHeartrate,
           JSON.stringify(activity),
         ]
       );
@@ -364,6 +369,8 @@ app.get("/api/runs", requireAuth, async (req, res) => {
     prCount: r.pr_count,
     bestEfforts: r.best_efforts ? JSON.parse(r.best_efforts) : [],
     zones: r.zones ? JSON.parse(r.zones) : null,
+    avgHeartrate: r.avg_heartrate,
+    excluded: r.excluded,
   }));
   res.json(runs);
 });
@@ -376,6 +383,35 @@ app.get("/api/athlete/stats", requireAuth, async (req, res) => {
   const row = rows[0];
   if (!row) return res.json(null);
   res.json({ stats: JSON.parse(row.stats_json), updatedAt: Number(row.stats_updated_at) });
+});
+
+// ---------- Edit a run: type and/or excluded ----------
+app.patch("/api/runs/:id", requireAuth, async (req, res) => {
+  const { type, excluded } = req.body;
+  const updates = [];
+  const values = [];
+  let i = 1;
+
+  if (type !== undefined) {
+    if (!["Long", "Tempo", "Interval", "Test"].includes(type)) {
+      return res.status(400).json({ error: "Invalid type" });
+    }
+    updates.push(`type = $${i++}`);
+    values.push(type);
+  }
+  if (excluded !== undefined) {
+    updates.push(`excluded = $${i++}`);
+    values.push(!!excluded);
+  }
+  if (!updates.length) return res.status(400).json({ error: "Nothing to update" });
+
+  values.push(req.params.id, req.userId);
+  const result = await pool.query(
+    `UPDATE runs SET ${updates.join(", ")} WHERE id = $${i++} AND user_id = $${i++} RETURNING id`,
+    values
+  );
+  if (!result.rows.length) return res.status(404).json({ error: "Run not found" });
+  res.json({ success: true });
 });
 
 app.get("/api/status", requireAuth, async (req, res) => {

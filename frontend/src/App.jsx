@@ -91,6 +91,26 @@ export default function App() {
     }
   }
 
+  async function handleUpdateRun(runId, updates) {
+    if (runId.startsWith("manual_")) {
+      setManualRuns((prev) => prev.map((r) => (r.id === runId ? { ...r, ...updates } : r)));
+      return;
+    }
+    // optimistic update, then persist
+    setRuns((prev) => prev.map((r) => (r.id === runId ? { ...r, ...updates } : r)));
+    try {
+      const res = await apiFetch(`/api/runs/${runId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      if (!res.ok) throw new Error("Failed to update run");
+    } catch (e) {
+      console.error(e);
+      loadRuns(); // revert to server truth if the update failed
+    }
+  }
+
   function handleLogout() {
     clearToken();
     setConnected(false);
@@ -109,6 +129,10 @@ export default function App() {
     const combined = [...runs, ...manualRuns];
     return combined.sort((a, b) => new Date(a.date) - new Date(b.date)).map((r, i) => ({ ...r, order: i + 1 }));
   }, [runs, manualRuns]);
+
+  // Excluded runs stay visible in the Dashboard's Run Log (so they can be re-included),
+  // but are filtered out everywhere else in the app — analysis, stats, fitness estimates.
+  const activeRuns = useMemo(() => allRuns.filter((r) => !r.excluded), [allRuns]);
 
   const phase = currentPhase();
 
@@ -193,8 +217,8 @@ export default function App() {
             </div>
 
             {/* Tab content */}
-            {activeTab === "dashboard" && <DashboardTab allRuns={allRuns} onShowModal={() => setShowModal(true)} C={C} />}
-            {activeTab === "analysis" && <RunAnalysisTab allRuns={allRuns} C={C} />}
+            {activeTab === "dashboard" && <DashboardTab allRuns={allRuns} activeRuns={activeRuns} onShowModal={() => setShowModal(true)} onUpdateRun={handleUpdateRun} C={C} />}
+            {activeTab === "analysis" && <RunAnalysisTab allRuns={activeRuns} C={C} />}
             {activeTab === "stats" && <StatistiekenTab connected={connected} C={C} />}
           </>
         )}
