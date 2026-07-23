@@ -112,6 +112,9 @@ export function analyzeRun(allRuns, runId) {
   comparison.isLongestDistance = run.distance > longestPrevDistance;
   comparison.longestPrevDistance = longestPrevDistance;
 
+  const allHistoryPaces = history.map(avgPace);
+  comparison.isAllTimeFastest = allHistoryPaces.length ? pace < Math.min(...allHistoryPaces) : history.length === 0;
+
   const recentPaces = sorted.slice(Math.max(0, idx - 4), idx + 1).map(avgPace);
   let overallTrend = "stabiel";
   if (recentPaces.length >= 3) {
@@ -269,10 +272,84 @@ export function analyzeRun(allRuns, runId) {
   const paceZones = computePaceZones(run, paces, thresholdPaceSecPerKm);
   const paceZonesText = paceZonesInsight(paceZones);
 
+  // ---------- Performance Index (composite score: pace, distance, HR efficiency, consistency) ----------
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+  const sameOrQuality = runsUpToHere.filter((r) => ["Tempo", "Interval", "Test"].includes(r.type) || r.type === run.type);
+  const bestPaceSoFar = sameOrQuality.length ? Math.min(...sameOrQuality.map(avgPace)) : pace;
+  const longestSoFar = runsUpToHere.length ? Math.max(...runsUpToHere.map((r) => r.distance)) : run.distance;
+
+  const paceScore = clamp((bestPaceSoFar / pace) * 100, 0, 100);
+  const distanceScore = clamp((run.distance / longestSoFar) * 100, 0, 100);
+  const consistencyScore = clamp(100 - variance * 2, 0, 100);
+
+  let hrScore = null;
+  if (run.avgHeartrate) {
+    const efficiency = 1 / (pace * run.avgHeartrate);
+    const historyWithHr = runsUpToHere.filter((r) => r.avgHeartrate);
+    const bestEfficiency = historyWithHr.length
+      ? Math.max(...historyWithHr.map((r) => 1 / (avgPace(r) * r.avgHeartrate)))
+      : efficiency;
+    hrScore = clamp((efficiency / bestEfficiency) * 100, 0, 100);
+  }
+
+  const piWeights = hrScore != null
+    ? { pace: 0.3, distance: 0.2, hr: 0.2, consistency: 0.3 }
+    : { pace: 0.35, distance: 0.25, consistency: 0.4 };
+
+  const performanceIndex = {
+    score: Math.round(
+      paceScore * piWeights.pace +
+      distanceScore * piWeights.distance +
+      (hrScore != null ? hrScore * piWeights.hr : 0) +
+      consistencyScore * piWeights.consistency
+    ),
+    paceScore: Math.round(paceScore),
+    distanceScore: Math.round(distanceScore),
+    hrScore: hrScore != null ? Math.round(hrScore) : null,
+    consistencyScore: Math.round(consistencyScore),
+  };
+
+  // ---------- AI Analysis — a longer narrative paragraph, still rule-based (no live model call) ----------
+  const aiAnalysisText = (() => {
+    const parts = [];
+    parts.push(`Deze ${run.type.toLowerCase()}-run van ${run.distance}km werd afgelegd in ${fmtDurationLocal(run.movingSec)}, aan een gemiddelde pace van ${fmtPaceLocal(pace)}/km.`);
+    if (comparison.isAllTimeFastest) {
+      parts.push("Dit is de snelste gemiddelde pace die je ooit hebt gelopen — een absoluut hoogtepunt in je logboek.");
+    } else if (comparison.isPR) {
+      parts.push(`Dit is je snelste ${run.type.toLowerCase()}-run tot nu toe.`);
+    }
+    if (splitType === "even") {
+      parts.push("Je pacing was gelijkmatig verdeeld over de kilometers, wat wijst op goede tempo-controle.");
+    } else if (splitType === "positive") {
+      parts.push("Je vertraagde richting het einde — mogelijk een te ambitieuze start of opkomende vermoeidheid.");
+    } else {
+      parts.push("Je versnelde juist richting het einde, wat duidt op resterende reserve of een bewust opgebouwd tempo.");
+    }
+    if (performanceIndex.hrScore != null) {
+      parts.push(`Op basis van je hartslag-efficiëntie scoort deze run ${performanceIndex.hrScore}/100 vergeleken met je beste efficiëntie tot nu toe.`);
+    }
+    parts.push(`In totaal komt dit uit op een Performance Index van ${performanceIndex.score}/100, samengesteld uit pace, afstand, hartslag-efficiëntie en consistentie.`);
+    return parts.join(" ");
+  })();
+
   return {
     run, pace, elevGain, elevLoss, comparison, splitType, variance, fastestIdx, slowestIdx,
     finishingKick, terrainFlags, paces, runElev, disciplineTrend, disciplineDirection, feedback,
-    fitness, zoneSummary, paceZones, paceZonesText,
+    fitness, zoneSummary, paceZones, paceZonesText, performanceIndex, aiAnalysisText,
     bestEfforts: { best1k, bestMile, best5k, best10k, bestHalf },
   };
+}
+
+function fmtDurationLocal(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.round(sec % 60);
+  return h > 0 ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}` : `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function fmtPaceLocal(secPerKm) {
+  const m = Math.floor(secPerKm / 60);
+  const s = Math.round(secPerKm % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }

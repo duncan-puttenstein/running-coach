@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
-import { RefreshCw, LayoutDashboard, ClipboardList, Award, Moon, Sun, LogOut } from "lucide-react";
+import { RefreshCw, LayoutDashboard, ClipboardList, Award, Moon, Sun, LogOut, TrendingUp } from "lucide-react";
 import { darkTheme, lightTheme } from "./themes.js";
 import { API_BASE, displayFont, bodyFont } from "./constants.js";
 import { currentPhase } from "./utils/format.js";
 import { getToken, setToken, clearToken, apiFetch } from "./utils/auth.js";
 import DashboardTab from "./tabs/DashboardTab.jsx";
+import TrendsTab from "./tabs/TrendsTab.jsx";
 import RunAnalysisTab from "./tabs/RunAnalysisTab.jsx";
 import StatistiekenTab from "./tabs/StatistiekenTab.jsx";
 import AddRunModal from "./components/AddRunModal.jsx";
@@ -146,6 +147,7 @@ export default function App() {
 
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={15} /> },
+    { id: "trends", label: "Trends", icon: <TrendingUp size={15} /> },
     { id: "analysis", label: "Run Analyse", icon: <ClipboardList size={15} /> },
     { id: "stats", label: "Statistieken", icon: <Award size={15} /> },
   ];
@@ -218,6 +220,7 @@ export default function App() {
 
             {/* Tab content */}
             {activeTab === "dashboard" && <DashboardTab allRuns={allRuns} activeRuns={activeRuns} onShowModal={() => setShowModal(true)} onUpdateRun={handleUpdateRun} C={C} />}
+            {activeTab === "trends" && <TrendsTab allRuns={activeRuns} C={C} />}
             {activeTab === "analysis" && <RunAnalysisTab allRuns={activeRuns} C={C} />}
             {activeTab === "stats" && <StatistiekenTab connected={connected} C={C} />}
           </>

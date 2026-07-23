@@ -66,6 +66,8 @@ async function initDb() {
   await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id);`);
   await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS avg_heartrate REAL;`);
   await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS excluded BOOLEAN DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS hr_splits TEXT;`);
+  await pool.query(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS route TEXT;`);
 }
 await initDb();
 
@@ -234,15 +236,18 @@ app.post("/api/sync", requireAuth, async (req, res) => {
       let splits = [];
       let splitDistances = [];
       let elev = [];
+      let hrSplits = [];
+      let route = [];
       try {
         const streams = await stravaGet(
-          `/activities/${activity.id}/streams?keys=distance,time,altitude&key_by_type=true`,
+          `/activities/${activity.id}/streams?keys=distance,time,altitude,latlng,heartrate&key_by_type=true`,
           token
         );
         if (streams.distance && streams.time) {
           const dist = streams.distance.data;
           const time = streams.time.data;
           const alt = streams.altitude ? streams.altitude.data : null;
+          const hr = streams.heartrate ? streams.heartrate.data : null;
           const totalKm = activity.distance / 1000;
           const fullKm = Math.floor(totalKm);
           const remainder = +(totalKm - fullKm).toFixed(2);
@@ -259,9 +264,18 @@ app.post("/api/sync", requireAuth, async (req, res) => {
             splits.push(Math.round(t - lastT));
             splitDistances.push(target === activity.distance ? remainder : 1);
             if (alt) elev.push(+(alt[idx] - alt[lastIdx]).toFixed(1));
+            if (hr) {
+              const segment = hr.slice(lastIdx, idx + 1).filter((v) => v != null);
+              hrSplits.push(segment.length ? Math.round(segment.reduce((a, b) => a + b, 0) / segment.length) : null);
+            }
             lastT = t;
             lastIdx = idx;
           }
+        }
+        if (streams.latlng && streams.latlng.data) {
+          const points = streams.latlng.data;
+          const step = Math.max(1, Math.floor(points.length / 150)); // downsample to ~150 points
+          route = points.filter((_, i) => i % step === 0);
         }
       } catch (e) {
         splits = [activity.moving_time];
@@ -308,8 +322,8 @@ app.post("/api/sync", requireAuth, async (req, res) => {
       await pool.query(
         `INSERT INTO runs
           (id, strava_id, user_id, date, type, distance, moving_sec, splits, split_distances, elev, note,
-           suffer_score, achievement_count, pr_count, best_efforts, zones, avg_heartrate, raw_json)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+           suffer_score, achievement_count, pr_count, best_efforts, zones, avg_heartrate, hr_splits, route, raw_json)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
          ON CONFLICT (strava_id) DO NOTHING`,
         [
           `strava_${activity.id}`,
@@ -329,6 +343,8 @@ app.post("/api/sync", requireAuth, async (req, res) => {
           JSON.stringify(bestEfforts),
           JSON.stringify(zones),
           avgHeartrate,
+          JSON.stringify(hrSplits),
+          JSON.stringify(route),
           JSON.stringify(activity),
         ]
       );
@@ -371,6 +387,8 @@ app.get("/api/runs", requireAuth, async (req, res) => {
     zones: r.zones ? JSON.parse(r.zones) : null,
     avgHeartrate: r.avg_heartrate,
     excluded: r.excluded,
+    hrSplits: r.hr_splits ? JSON.parse(r.hr_splits) : [],
+    route: r.route ? JSON.parse(r.route) : [],
   }));
   res.json(runs);
 });
